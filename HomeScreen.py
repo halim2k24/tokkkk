@@ -9,14 +9,13 @@ from pypylon import pylon
 from datetime import datetime
 import json  # Import the json module
 from plcsetting import open_plc_settings
-from picking_area import load_picking_area
+from picking_area import set_picking_area, load_picking_area
 from top_menu import create_top_menu
+from PickingCondations import PickingConditions
 
 
 class HomeScreen:
     def __init__(self, root):
-        self.converter = None
-        self.label = None
         self.bbox = None
         self.root = root
         self.root.title('Home Screen with Menu and Sections')
@@ -31,7 +30,7 @@ class HomeScreen:
         )
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(current_dir, "model/best2.pt")
+        model_path = os.path.join(current_dir, "model/best3.pt")
         self.model = YOLO(model_path)
 
         self.main_frame = tk.Frame(self.root, bg="white")
@@ -61,28 +60,21 @@ class HomeScreen:
         self.button_frame = tk.Frame(self.image_view_frame, bg="white")
         self.button_frame.pack(pady=10)
 
-        # Add the "Capture Image" button
-        self.capture_image_button = tk.Button(self.button_frame, text="Capture Image", command=self.capture_image, bg="orange",
-                                              fg="white", font=("Helvetica", 12, "bold"), padx=20, pady=10)
-        self.capture_image_button.pack(side="left", padx=10)
-
-        # Add the "Capture Video" button
-        self.capture_video_button = tk.Button(self.button_frame, text="Capture Video", command=self.capture_video, bg="cyan",
-                                              fg="white", font=("Helvetica", 12, "bold"), padx=20, pady=10)
-        self.capture_video_button.pack(side="left", padx=10)
+        self.image_picking_button = tk.Button(self.button_frame, text="Image Picking", command=self.image_picking,
+                                              bg="blue", fg="white", font=("Helvetica", 12, "bold"), padx=20, pady=10)
+        self.image_picking_button.pack(side="left", padx=10)
 
         self.start_button = tk.Button(self.button_frame, text="Start Picking", command=self.start_picking, bg="green",
                                       fg="white", font=("Helvetica", 12, "bold"), padx=20, pady=10)
         self.start_button.pack(side="left", padx=10)
 
-        # Add new buttons for Picking Area One and Two
-        self.picking_area_one_button = tk.Button(self.button_frame, text="Picking Area One", command=self.set_picking_area_one,
-                                                 bg="purple", fg="white", font=("Helvetica", 12, "bold"), padx=20, pady=10)
-        self.picking_area_one_button.pack(side="left", padx=10)
+        self.bearing_area_button = tk.Button(self.button_frame, text="Bearing Area", command=self.set_bearing_area,
+                                             bg="purple", fg="white", font=("Helvetica", 12, "bold"), padx=20, pady=10)
+        self.bearing_area_button.pack(side="left", padx=10)
 
-        self.picking_area_two_button = tk.Button(self.button_frame, text="Picking Area Two", command=self.set_picking_area_two,
-                                                 bg="brown", fg="white", font=("Helvetica", 12, "bold"), padx=20, pady=10)
-        self.picking_area_two_button.pack(side="left", padx=10)
+        self.nut_area_button = tk.Button(self.button_frame, text="Nut Area", command=self.set_nut_area,
+                                         bg="brown", fg="white", font=("Helvetica", 12, "bold"), padx=20, pady=10)
+        self.nut_area_button.pack(side="left", padx=10)
 
         self.stop_button = tk.Button(self.button_frame, text="Stop", command=self.stop_picking, bg="red", fg="white",
                                      font=("Helvetica", 12, "bold"), padx=20, pady=10)
@@ -116,136 +108,48 @@ class HomeScreen:
         self.count_label.pack(pady=5, anchor="w", padx=10)
 
         self.update_date_time()
+        load_picking_area(self)
+
+        # Initialize variables for drawing
+        self.drawing_bearing_area = False
+        self.drawing_nut_area = False
+        self.bearing_bbox = None
+        self.nut_bbox = None
+        self.bearing_label = None
+        self.nut_label = None
+        self.start_x = None
+        self.start_y = None
+
+        # Load existing areas if available
+        self.load_bearing_area()
+        self.load_nut_area()
 
         self.bbox_area_one = None
         self.label_area_one = None
-        self.bbox_area_two = None  # Initialize bbox_area_two
-        self.label_area_two = None  # Initialize label_area_two
-        # Load both picking areas on initialization
-        self.load_picking_areas()
+        self.bbox_area_two = None
+        self.label_area_two = None
+        self.bbox_bearing_area = None
+        self.label_bearing_area = None
+        self.bbox_nut_area = None
+        self.label_nut_area = None
 
-        # Initialize coordinates
-        self.start_x_one = None
-        self.start_y_one = None
-        self.end_x_one = None
-        self.end_y_one = None
+        # Load picking settings
+        self.picking_box_size = self.load_picking_box_size()
 
-        self.start_x_two = None
-        self.start_y_two = None
-        self.end_x_two = None
-        self.end_y_two = None
 
-    def set_picking_area_one(self):
-        self.set_picking_area("picking_area_one.json", "Area One")
+    def load_picking_settings(self):
+        try:
+            with open('picking_settings.json', 'r') as f:
+                settings = json.load(f)
+                return settings.get('picking_angle', '0-180')  # Default to '0-180' if not found
+        except Exception as e:
+            print(f"Error loading picking settings: {e}")
+            return '0-180'  # Default value if loading fails
+    
 
-    def set_picking_area_two(self):
-        self.set_picking_area("picking_area_two.json", "Area Two")
-
-    def set_picking_area(self, filename, label):
-        # Clear previous area if it exists
-        if label == "Area One" and self.bbox_area_one:
-            self.camera_canvas.delete(self.bbox_area_one)
-            self.camera_canvas.delete(self.label_area_one)
-            self.bbox_area_one = None
-            self.label_area_one = None
-        elif label == "Area Two" and self.bbox_area_two:
-            self.camera_canvas.delete(self.bbox_area_two)
-            self.camera_canvas.delete(self.label_area_two)
-            self.bbox_area_two = None
-            self.label_area_two = None
-
-        # Bind mouse events to draw a new bounding box
-        self.camera_canvas.bind("<ButtonPress-1>", lambda event: self.on_button_press(event, label))
-        self.camera_canvas.bind("<B1-Motion>", self.on_mouse_drag)
-        self.camera_canvas.bind("<ButtonRelease-1>", lambda event: self.on_button_release(event, filename, label))
-
-    def on_button_press(self, event, label):
-        self.start_x = event.x
-        self.start_y = event.y
-        self.bbox = self.camera_canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline="red")
-        self.label = self.camera_canvas.create_text(self.start_x, self.start_y - 10, text=label, fill='red', anchor=tk.SW)
-
-    def on_mouse_drag(self, event):
-        cur_x, cur_y = (event.x, event.y)
-        print(f"Current coordinates: {cur_x}, {cur_y}")
-        self.camera_canvas.coords(self.bbox, self.start_x, self.start_y, cur_x, cur_y)
-        self.camera_canvas.coords(self.label, self.start_x, self.start_y - 10)
-
-    def on_button_release(self, event, filename, label):
-        self.end_x, self.end_y = (event.x, event.y)
-        self.camera_canvas.unbind("<ButtonPress-1>")
-        self.camera_canvas.unbind("<B1-Motion>")
-        self.camera_canvas.unbind("<ButtonRelease-1>")
-        messagebox.showinfo("Picking Area", f"Picking area set from ({self.start_x}, {self.start_y}) to ({self.end_x}, {self.end_y})")
-        
-        # Save the picking area to the specified file
-        self.save_picking_area(filename, label)
-
-        # Store the new bounding box in the correct variable
-        if label == "Area One":
-            self.start_x_one, self.start_y_one, self.end_x_one, self.end_y_one = self.start_x, self.start_y, self.end_x, self.end_y
-            self.bbox_area_one = self.bbox
-            self.label_area_one = self.label
-        elif label == "Area Two":
-            self.start_x_two, self.start_y_two, self.end_x_two, self.end_y_two = self.start_x, self.start_y, self.end_x, self.end_y
-            self.bbox_area_two = self.bbox
-            self.label_area_two = self.label
-
-        # Raise the new bounding box to ensure it's visible
-        self.raise_bounding_boxes()
-
-        # Draw the overlay
-        self.draw_overlay()
-
-    def save_picking_area(self, filename, label):
-        picking_area = {
-            "start_x": self.start_x,
-            "start_y": self.start_y,
-            "end_x": self.end_x,
-            "end_y": self.end_y
-        }
-        with open(filename, "w") as f:
-            json.dump(picking_area, f)
-
-    def load_picking_areas(self):
-        self.load_picking_area_from_file("picking_area_one.json", "Area One")
-        self.load_picking_area_from_file("picking_area_two.json", "Area Two")
-
-    def load_picking_area_from_file(self, filename, label):
-        if os.path.exists(filename):
-            with open(filename, "r") as f:
-                picking_area = json.load(f)
-                start_x = picking_area["start_x"]
-                start_y = picking_area["start_y"]
-                end_x = picking_area["end_x"]
-                end_y = picking_area["end_y"]
-                if label == "Area One":
-                    self.bbox_area_one = self.camera_canvas.create_rectangle(start_x, start_y, end_x, end_y, outline="red")
-                    self.label_area_one = self.camera_canvas.create_text(start_x, start_y - 10, text=label, fill='red', anchor=tk.SW)
-                elif label == "Area Two":
-                    self.bbox_area_two = self.camera_canvas.create_rectangle(start_x, start_y, end_x, end_y, outline="red")
-                    self.label_area_two = self.camera_canvas.create_text(start_x, start_y - 10, text=label, fill='red', anchor=tk.SW)
-                self.raise_bounding_boxes()
-
-    def raise_bounding_boxes(self):
-        # Ensure all bounding boxes and labels are on top
-        if self.bbox_area_one:
-            self.camera_canvas.tag_raise(self.bbox_area_one)
-        if self.label_area_one:
-            self.camera_canvas.tag_raise(self.label_area_one)
-        if self.bbox_area_two:
-            self.camera_canvas.tag_raise(self.bbox_area_two)
-        if self.label_area_two:
-            self.camera_canvas.tag_raise(self.label_area_two)
-
-    def picking_area_one(self):
-        messagebox.showinfo("Picking Area One", "Picking Area One selected")
-
-    def picking_area_two(self):
-        messagebox.showinfo("Picking Area Two", "Picking Area Two selected")
 
     def open_picking_settings(self):
-        messagebox.showinfo("Picking Settings", "Open Picking Settings")
+        PickingConditions(self.root)
 
     def open_settings(self):
         open_plc_settings(self.root)
@@ -261,65 +165,227 @@ class HomeScreen:
         else:
             self.language = 'English'
 
+
     def go_home(self):
         self.stop_camera()
         messagebox.showinfo("Home", "You are on the Home screen!")
 
+
     def stop_camera(self):
-        # Stop the camera if it is grabbing
         if hasattr(self, 'camera') and self.camera.IsGrabbing():
             self.camera.StopGrabbing()
-            self.camera.Close()  # Ensure the camera is properly closed
+
+    def open_camera(self):
+        self.stop_camera()
+        try:
+            self.camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
+            self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+            self.converter = pylon.ImageFormatConverter()
+            self.converter.OutputPixelFormat = pylon.PixelType_RGB8packed
+            self.converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+            # self.grab_and_display()
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open camera: {str(e)}")
+            print(f"Error initializing camera: {str(e)}")
 
 
+
+    def draw_picking_box(self, frame, center_x, center_y, object_width, picking_box_size):
+        picking_angle = self.load_picking_settings()
+
+        # Load the bearing area coordinates from the JSON file
+        bearing_area = self.load_bearing_area_from_json()
+
+        # Define the bearing area boundaries
+        area_x_min = bearing_area['start_x']
+        area_y_min = bearing_area['start_y']
+        area_x_max = bearing_area['end_x']
+        area_y_max = bearing_area['end_y']
+
+        def is_within_bearing_area(x, y, size):
+            # Check if the box stays within the bearing area
+            return area_x_min <= x <= area_x_max - size and area_y_min <= y <= area_y_max - size
+
+        # First, try drawing boxes at 0-180 degrees
+        success = False
+        angles_0_180 = [0, 180]
+        for angle in angles_0_180:
+            if angle == 0:
+                start_x = int(center_x + object_width / 2)
+                start_y = int(center_y - picking_box_size / 2)
+            elif angle == 180:
+                start_x = int(center_x - object_width / 2 - picking_box_size)
+                start_y = int(center_y - picking_box_size / 2)
+
+            if is_within_bearing_area(start_x, start_y, picking_box_size):
+                # Draw the picking box at this angle since it's within the bearing area
+                cv2.rectangle(frame, (start_x, start_y),
+                            (start_x + picking_box_size, start_y + picking_box_size),
+                            (0, 255, 255), 2)  # Yellow color
+
+                # Calculate and draw the center point of the picking box
+                box_center_x = start_x + picking_box_size // 2
+                box_center_y = start_y + picking_box_size // 2
+                cv2.circle(frame, (box_center_x, box_center_y), 3, (0, 255, 255), -1)  # Center point
+                cv2.putText(frame, f"({box_center_x}, {box_center_y})",
+                            (box_center_x + 5, box_center_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                cv2.putText(frame, f"Pick {angle}", (start_x, start_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                success = True  # Mark success
+            else:
+                print(f"Box at angle {angle} goes outside the bearing area, adjusting...")
+
+        # If no box was drawn for 0-180 degrees, try drawing at 90-270 degrees
+        if not success:
+            angles_90_270 = [90, 270]
+            for angle in angles_90_270:
+                if angle == 90:
+                    start_x = int(center_x - picking_box_size / 2)
+                    start_y = int(center_y - object_width / 2 - picking_box_size)
+                elif angle == 270:
+                    start_x = int(center_x - picking_box_size / 2)
+                    start_y = int(center_y + object_width / 2)
+
+                if is_within_bearing_area(start_x, start_y, picking_box_size):
+                    # Draw the picking box at this angle since it's within the bearing area
+                    cv2.rectangle(frame, (start_x, start_y),
+                                (start_x + picking_box_size, start_y + picking_box_size),
+                                (0, 255, 255), 2)  # Yellow color
+
+                    # Calculate and draw the center point of the picking box
+                    box_center_x = start_x + picking_box_size // 2
+                    box_center_y = start_y + picking_box_size // 2
+                    cv2.circle(frame, (box_center_x, box_center_y), 3, (0, 255, 255), -1)  # Center point
+                    cv2.putText(frame, f"({box_center_x}, {box_center_y})",
+                                (box_center_x + 5, box_center_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                    cv2.putText(frame, f"Pick {angle}", (start_x, start_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                    success = True  # Mark success
+                else:
+                    print(f"Box at angle {angle} goes outside the bearing area, unable to draw...")
+
+        if not success:
+            print("Unable to draw any picking box within the bearing area.")
+            
 
     def grab_and_display(self):
+        if self.camera.IsGrabbing():
+            try:
+                grab_result = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
+                if grab_result.GrabSucceeded():
+                    print("Frame grabbed successfully.")
+                    image = self.converter.Convert(grab_result)  # Convert the image to RGB8
+                    frame = image.GetArray()  # Get the RGB frame
+
+                    # Resize the frame to fit the canvas while maintaining aspect ratio
+                    canvas_width = self.camera_canvas.winfo_width()
+                    canvas_height = self.camera_canvas.winfo_height()
+                    frame_height, frame_width, _ = frame.shape
+                    aspect_ratio = frame_width / frame_height
+
+                    if canvas_width / canvas_height > aspect_ratio:
+                        new_height = canvas_height
+                        new_width = int(aspect_ratio * new_height)
+                    else:
+                        new_width = canvas_width
+                        new_height = int(new_width / aspect_ratio)
+
+                    frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+                    # Apply object detection
+                    results = self.model.predict(source=frame, task="detect", show=False)
+                    bearing_coords = self.camera_canvas.coords(self.bearing_bbox) if self.bearing_bbox else None
+                    nut_coords = self.camera_canvas.coords(self.nut_bbox) if self.nut_bbox else None
+
+                    for result in results:
+                        for box in result.boxes:
+                            x1, y1, x2, y2 = box.xyxy[0]  # Get the bounding box coordinates
+                            center_x = (x1 + x2) / 2
+                            center_y = (y1 + y2) / 2
+                            object_width = x2 - x1  # Width of the object
+
+                            confidence = box.conf.item()  # Confidence score
+                            print(f"Confidence: {confidence}")  
+
+                            label = result.names[box.cls.item()]  # Class label (assume OK or NG)
+
+                            # Check if the object is within the bearing area
+                            inside_bearing = (bearing_coords and bearing_coords[0] <= center_x <= bearing_coords[2] and
+                                            bearing_coords[1] <= center_y <= bearing_coords[3])
+                            matching_value = self.load_matching_value()
+
+
+                            if inside_bearing:
+                                if confidence < matching_value/100:
+                                    label = "ng"
+
+                                if label == "ok":
+                                    # OK object: Draw green bounding box and center point
+                                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 0), 1)
+                                    cv2.putText(frame, f"{label}: {confidence:.2f}",
+                                                (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                                    # Draw center point for OK objects
+                                    cv2.circle(frame, (int(center_x), int(center_y)), 5, (255, 255, 0), -1)
+                                    cv2.putText(frame, f"({int(center_x)}, {int(center_y)})", (int(center_x), int(center_y)),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+                                    # Draw the picking box on the OK object
+                                    self.draw_picking_box(frame, center_x, center_y, object_width, picking_box_size=self.picking_box_size)
+
+                                elif label == "ng":
+                                    # NG object: Draw red bounding box, but no center point or coordinates
+                                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 1)
+                                    cv2.putText(frame, f"{label} (NG)",
+                                                (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                            else:
+                                # Outside the bearing area: Draw gray bounding box, no labels or confidence
+                                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (128, 128, 128), 1)
+
+                    # Convert the result image to a format suitable for Tkinter
+                    result_image = Image.fromarray(frame)
+                    imgtk = ImageTk.PhotoImage(image=result_image)
+                    self.camera_canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
+                    self.camera_canvas.imgtk = imgtk  # Keep a reference to the image
+
+                    # Ensure the rectangles and labels are on top
+                    self.raise_bounding_boxes()
+                else:
+                    print("Failed to grab frame.")
+                grab_result.Release()
+            except Exception as e:
+                print(f"Error during frame grabbing: {str(e)}")
+        else:
+            print("Camera is not grabbing.")
+        self.root.after(10, self.grab_and_display)
+
+
+
+
+
+
+
+    def update_camera_frame(self):
         if self.camera.IsGrabbing():
             grab_result = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
             if grab_result.GrabSucceeded():
                 image = self.converter.Convert(grab_result)  # Convert the image to RGB8
                 frame = image.GetArray()  # Get the RGB frame
 
-                # Convert the frame to a PIL Image
-                pil_image = Image.fromarray(frame)
-
-                # Get the canvas dimensions
+                # Resize the frame to fit the canvas
                 canvas_width = self.camera_canvas.winfo_width()
                 canvas_height = self.camera_canvas.winfo_height()
+                frame = cv2.resize(frame, (canvas_width, canvas_height), interpolation=cv2.INTER_AREA)
 
-                # Calculate the scaling factor to maintain aspect ratio
-                img_width, img_height = pil_image.size
-                width_ratio = canvas_width / img_width
-                height_ratio = canvas_height / img_height
-                scale_factor = min(width_ratio, height_ratio)
-
-                # Resize the image to fit within the canvas
-                new_width = int(img_width * scale_factor)
-                new_height = int(img_height * scale_factor)
-                resized_image = pil_image.resize((new_width, new_height), Image.LANCZOS)
-
-                imgtk = ImageTk.PhotoImage(image=resized_image)
+                img = Image.fromarray(frame)
+                imgtk = ImageTk.PhotoImage(image=img)
                 self.camera_canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
                 self.camera_canvas.imgtk = imgtk
 
-                # Ensure the picking area boxes are on top of the image
+                # Ensure the rectangles and labels are on top
                 self.raise_bounding_boxes()
 
             grab_result.Release()
-            self.camera_canvas.after(10, self.grab_and_display)
+        self.root.after(10, self.update_camera_frame)
 
-
-
-    def open_camera(self):
-        self.stop_camera()
-        # Initialize camera and converter
-        self.camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-        self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
-        self.converter = pylon.ImageFormatConverter()
-        self.converter.OutputPixelFormat = pylon.PixelType_RGB8packed
-        self.converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
-
-        self.grab_and_display()
 
     def start_recording(self):
         self.recording = True
@@ -342,185 +408,78 @@ class HomeScreen:
 
     def start_picking(self):
         self.stop_camera()
-        self.open_camera()
-        self.crop_and_save_areas()  # Call the method to crop and save images
+        # Initialize camera or video capture
+        self.open_camera()  # Ensure this method correctly starts the camera
+        # self.update_camera_frame()  # Start updating the camera frame
+        # self.raise_bounding_boxes()  # Ensure the rectangles are on top
 
-    def crop_and_save_areas(self):
-        # Capture the current frame from the camera
-        grab_result = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-        if grab_result.GrabSucceeded():
-            image = self.converter.Convert(grab_result)  # Convert the image to RGB8
-            frame = image.GetArray()  # Get the RGB frame
-            # frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
-            pil_image = Image.fromarray(frame)
+        # Start grabbing and displaying frames
+        self.grab_and_display()
 
-            # Save the full frame image
-            full_frame_path = "current_frame.png"
-            pil_image.save(full_frame_path)
-            print(f"Full frame image saved as {full_frame_path}")
+    def stop_picking(self):
+        self.stop_camera()
+        messagebox.showinfo("Picking", "Stopping Picking...")
 
-            # Convert the full frame to grayscale
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            gray_pil_image = Image.fromarray(gray_frame)
-
-            # Save the grayscale full frame image
-            gray_frame_path = "current_frame_gray.png"
-            gray_pil_image.save(gray_frame_path)
-            print(f"Grayscale full frame image saved as {gray_frame_path}")
-
-            # Convert the grayscale image back to RGB for merging
-            rgb_base_image = gray_pil_image.convert("RGB")
-
-            # Get actual image size
-            actual_width, actual_height = pil_image.size
-
-            # Calculate scaling factors based on the displayed image
-            canvas_width = self.camera_canvas.winfo_width()
-            canvas_height = self.camera_canvas.winfo_height()
-            width_ratio = canvas_width / actual_width
-            height_ratio = canvas_height / actual_height
-            scale_factor = min(width_ratio, height_ratio)
-
-            # Initialize a list to store cropped images and their positions
-            crops_and_positions = []
-
-            # Crop and save Area One
-            if None not in (self.start_x_one, self.start_y_one, self.end_x_one, self.end_y_one):
-                # Adjust coordinates based on the scaling factor
-                x1 = int(self.start_x_one / scale_factor)
-                y1 = int(self.start_y_one / scale_factor)
-                x2 = int(self.end_x_one / scale_factor)
-                y2 = int(self.end_y_one / scale_factor)
-
-                # Print the crop coordinates for Area One
-                print(f"Area One crop coordinates: x1={x1}, y1={y1}, x2={x2}, y2={y2}")
-
-                # Ensure coordinates are within the image bounds
-                x1 = max(0, x1)
-                y1 = max(0, y1)
-                x2 = min(actual_width, x2)
-                y2 = min(actual_height, y2)
-
-                # Crop the first image from Area One
-                area_one_crop = pil_image.crop((x1, y1, x2, y2))
-                area_one_crop.save("area_one_crop.png")
-                print("Area One cropped and saved as area_one_crop.png.")
-
-                # Add to list for merging
-                crops_and_positions.append((area_one_crop, (x1, y1)))
-
-            # Crop and save Area Two
-            if None not in (self.start_x_two, self.start_y_two, self.end_x_two, self.end_y_two):
-                # Adjust coordinates based on the scaling factor
-                x1 = int(self.start_x_two / scale_factor)
-                y1 = int(self.start_y_two / scale_factor)
-                x2 = int(self.end_x_two / scale_factor)
-                y2 = int(self.end_y_two / scale_factor)
-
-                # Print the crop coordinates for Area Two
-                print(f"Area Two crop coordinates: x1={x1}, y1={y1}, x2={x2}, y2={y2}")
-
-                # Ensure coordinates are within the image bounds
-                x1 = max(0, x1)
-                y1 = max(0, y1)
-                x2 = min(actual_width, x2)
-                y2 = min(actual_height, y2)
-
-                # Crop the first image from Area Two
-                area_two_crop = pil_image.crop((x1, y1, x2, y2))
-                area_two_crop.save("area_two_crop.png")
-                print("Area Two cropped and saved as area_two_crop.png.")
-
-                # Add to list for merging
-                crops_and_positions.append((area_two_crop, (x1, y1)))
-
-            # Merge the cropped images onto the RGB base image
-            for crop, position in crops_and_positions:
-                rgb_base_image.paste(crop, position)
-
-            # Save the merged image
-            merged_image_path = "merged_image.png"
-            rgb_base_image.save(merged_image_path)
-            print(f"Merged image saved as {merged_image_path}")
-
-        grab_result.Release()
-
-    def grab_and_display_with_detection(self):
-        if self.camera.IsGrabbing():
-            grab_result = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-            if grab_result.GrabSucceeded():
-                image = self.converter.Convert(grab_result)  # Convert the image to RGB8
-                frame = image.GetArray()  # Get the RGB frame
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
-
-                # Perform object detection using YOLO
-                results = self.model.predict(source=frame, task="detect", show=False)
-                detections = results[0].boxes  # Get the detected bounding boxes
-
-                filtered_detections = []
-                for detection in detections:
-                    box = detection.xyxy[0]  # Get the bounding box coordinates
-                    if self.is_within_area(box, "Area One") or self.is_within_area(box, "Area Two"):
-                        filtered_detections.append(detection)
-
-                # Only plot the filtered detections
-                if filtered_detections:
-                    result_image_np = results[0].plot(filtered_detections)
-                else:
-                    result_image_np = frame  # Display original frame if no valid detections
-
-                # Convert the result image to PIL Image format for display
-                result_image = Image.fromarray(result_image_np)
-
-                # Set the desired pixel dimensions
-                desired_width = 2590 // 4
-                desired_height = 1942 // 4
-                
-                # Resize the image to the desired dimensions
-                result_image = result_image.resize((desired_width, desired_height), Image.LANCZOS)
-
-                imgtk = ImageTk.PhotoImage(image=result_image)
+    def image_picking(self):
+        self.stop_camera()
+        try:
+            file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png")])
+            if file_path:
+                image = Image.open(file_path)
+                image = image.resize((self.camera_canvas.winfo_width(), self.camera_canvas.winfo_height()), Image.ANTIALIAS)
+                imgtk = ImageTk.PhotoImage(image=image)
                 self.camera_canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
                 self.camera_canvas.imgtk = imgtk
 
-                # Ensure the picking area boxes are on top of the image
+                # Ensure the rectangles and labels are on top
                 self.raise_bounding_boxes()
 
-            grab_result.Release()
-            self.camera_canvas.after(10, self.grab_and_display_with_detection)
-
-
-    def stop_picking(self):
-        self.stop_camera()  # Ensure the camera is stopped
-        messagebox.showinfo("Picking", "Stopping Picking...")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
     def upload_action(self):
-        self.stop_camera()  # Stop any ongoing camera or video capture processes
+        self.stop_camera()
         file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png")])
         if file_path:
             img = Image.open(file_path)
-
-            # Resize the image while maintaining aspect ratio
-            canvas_width = self.camera_canvas.winfo_width()
-            canvas_height = self.camera_canvas.winfo_height()
-            img_width, img_height = img.size
-            width_ratio = canvas_width / img_width
-            height_ratio = canvas_height / img_height
+            max_width, max_height = 1400, 800
+            width_ratio = max_width / img.width
+            height_ratio = max_height / img.height
             new_ratio = min(width_ratio, height_ratio)
-            new_width = int(img_width * new_ratio)
-            new_height = int(img_height * new_ratio)
+            new_width = int(img.width * new_ratio)
+            new_height = int(img.height * new_ratio)
             img = img.resize((new_width, new_height), Image.LANCZOS)
-
-            # frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-            results = self.model.predict(source=img, task="segment", show=False)
+            frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+            results = self.model.predict(source=frame, task="detect", show=False)
             result_image = results[0].plot()
-            result_image = Image.fromarray(result_image)
+            # result_image = Image.fromarray(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
             imgtk = ImageTk.PhotoImage(image=result_image)
             self.camera_canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
             self.camera_canvas.imgtk = imgtk
 
-            # Ensure all circles and bounding boxes are on top of the uploaded image
-            self.raise_bounding_boxes()
+            # Draw circles for each detected object and show x, y values
+            for result in results:
+                for box in result.boxes:
+                    x1, y1, x2, y2 = box.xyxy[0]  # Ensure correct unpacking
+                    center_x = (x1 + x2) / 2
+                    center_y = (y1 + y2) / 2
+                    radius = ((x2 - x1) + (y2 - y1)) / 4  # Approximate radius
+                    # Convert tensor values to integers
+                    center_x = int(center_x.item())
+                    center_y = int(center_y.item())
+                    radius = int(radius.item())
+                    self.camera_canvas.create_oval(center_x - radius, center_y - radius, center_x + radius,
+                                                   center_y + radius, outline='red')
+                    self.camera_canvas.create_text(center_x, center_y, text=f"({center_x}, {center_y})", fill='red',
+                                                   anchor=tk.NW)
+                    # Draw the red center point
+                    self.camera_canvas.create_oval(center_x - 2, center_y - 2, center_x + 2, center_y + 2, fill='red')
+
+            # Ensure all circles are on top of the uploaded image
+            for bbox in self.bboxes:
+                self.camera_canvas.tag_raise(bbox)
+
+
 
     def exit_application(self):
         self.root.quit()
@@ -528,109 +487,169 @@ class HomeScreen:
             self.cap.release()
         cv2.destroyAllWindows()
 
-    def capture_image(self):
-        self.stop_camera()  # Ensure the camera is stopped
-        # Placeholder for the capture image logic
-        print("Image captured!")
 
-    def capture_video(self):
-        self.stop_camera()  # Ensure the camera is stopped
-        # Placeholder for the capture video logic
-        print("Video capture started!")
 
-    def draw_overlay(self):
-        # Clear any existing overlay
-        self.camera_canvas.delete("overlay")
+    def set_bearing_area(self):
+        # Enable drawing mode for the bearing area
+        self.drawing_bearing_area = True
+        self.camera_canvas.bind("<ButtonPress-1>", self.on_bearing_button_press)
+        self.camera_canvas.bind("<B1-Motion>", self.on_bearing_mouse_drag)
+        self.camera_canvas.bind("<ButtonRelease-1>", self.on_bearing_button_release)
 
-        # Draw a semi-transparent gray rectangle over the entire canvas
-        canvas_width = self.camera_canvas.winfo_width()
-        canvas_height = self.camera_canvas.winfo_height()
-        self.camera_canvas.create_rectangle(0, 0, canvas_width, canvas_height, fill='gray', stipple='gray50', tags="overlay")
+    def on_bearing_button_press(self, event):
+        if self.drawing_bearing_area:
+            self.start_x = event.x
+            self.start_y = event.y
+            if self.bearing_bbox:
+                self.camera_canvas.delete(self.bearing_bbox)
+            if self.bearing_label:
+                self.camera_canvas.delete(self.bearing_label)
+            self.bearing_bbox = self.camera_canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline='red', tags="bearing")
+            self.bearing_label = self.camera_canvas.create_text(self.start_x, self.start_y - 10, text="Bearing Area", fill="red", tags="bearing_label")
+            self.camera_canvas.tag_raise("bearing")
+            self.camera_canvas.tag_raise("bearing_label")
 
-        # Cut out the area inside the red bounding box
-        if self.bbox_area_one:
-            coords = self.camera_canvas.coords(self.bbox_area_one)
-            self.camera_canvas.create_rectangle(*coords, fill='', outline='', tags="overlay")
+    def on_bearing_mouse_drag(self, event):
+        if self.drawing_bearing_area and self.bearing_bbox:
+            self.camera_canvas.coords(self.bearing_bbox, self.start_x, self.start_y, event.x, event.y)
+            self.camera_canvas.coords(self.bearing_label, self.start_x, self.start_y - 10)
+            self.camera_canvas.tag_raise("bearing")
+            self.camera_canvas.tag_raise("bearing_label")
 
-        if self.bbox_area_two:
-            coords = self.camera_canvas.coords(self.bbox_area_two)
-            self.camera_canvas.create_rectangle(*coords, fill='', outline='', tags="overlay")
+    def on_bearing_button_release(self, event):
+        if self.drawing_bearing_area:
+            self.drawing_bearing_area = False
+            self.camera_canvas.unbind("<ButtonPress-1>")
+            self.camera_canvas.unbind("<B1-Motion>")
+            self.camera_canvas.unbind("<ButtonRelease-1>")
+            # Save the coordinates to a JSON file
+            self.save_bearing_area()
 
-    def adjust_brightness_contrast(self, image, brightness=0, contrast=0):
-        # Adjust brightness and contrast
-        beta = brightness
-        alpha = contrast / 127 + 1
-        adjusted = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
-        return adjusted
-    
+    def save_bearing_area(self):
+        if self.bearing_bbox:
+            coords = self.camera_canvas.coords(self.bearing_bbox)
+            bearing_area = {
+                'start_x': coords[0],
+                'start_y': coords[1],
+                'end_x': coords[2],
+                'end_y': coords[3]
+            }
+            with open('bearing_area.json', 'w') as f:
+                json.dump(bearing_area, f, indent=4)
 
-    def grab_and_display_with_detection(self):
-        if self.camera.IsGrabbing():
-            grab_result = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-            if grab_result.GrabSucceeded():
-                image = self.converter.Convert(grab_result)  # Convert the image to RGB8
-                frame = image.GetArray()  # Get the RGB frame
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
+    def load_bearing_area(self):
+        if os.path.exists('bearing_area.json'):
+            with open('bearing_area.json', 'r') as f:
+                bearing_area = json.load(f)
+                self.bearing_bbox = self.camera_canvas.create_rectangle(
+                    bearing_area['start_x'], bearing_area['start_y'],
+                    bearing_area['end_x'], bearing_area['end_y'],
+                    outline='red', tags="bearing"
+                )
+                self.bearing_label = self.camera_canvas.create_text(
+                    bearing_area['start_x'], bearing_area['start_y'] - 10,
+                    text="Bearing Area", fill="red", tags="bearing_label"
+                )
+                self.camera_canvas.tag_raise("bearing")
+                self.camera_canvas.tag_raise("bearing_label")
 
-                # Perform object detection using YOLO
-                results = self.model.predict(source=frame, task="detect", show=False)
-                detections = results[0].boxes  # Get the detected bounding boxes
+    def set_nut_area(self):
+        # Enable drawing mode for the nut area
+        self.drawing_nut_area = True
+        self.camera_canvas.bind("<ButtonPress-1>", self.on_nut_button_press)
+        self.camera_canvas.bind("<B1-Motion>", self.on_nut_mouse_drag)
+        self.camera_canvas.bind("<ButtonRelease-1>", self.on_nut_button_release)
 
-                filtered_detections = []
-                for detection in detections:
-                    box = detection.xyxy[0]  # Get the bounding box coordinates
-                    if self.is_within_area(box, "Area One") or self.is_within_area(box, "Area Two"):
-                        filtered_detections.append(detection)
+    def on_nut_button_press(self, event):
+        if self.drawing_nut_area:
+            self.start_x = event.x
+            self.start_y = event.y
+            if self.nut_bbox:
+                self.camera_canvas.delete(self.nut_bbox)
+            if self.nut_label:
+                self.camera_canvas.delete(self.nut_label)
+            self.nut_bbox = self.camera_canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline='red', tags="nut")
+            self.nut_label = self.camera_canvas.create_text(self.start_x, self.start_y - 10, text="Nut Area", fill="red", tags="nut_label")
+            self.camera_canvas.tag_raise("nut")
+            self.camera_canvas.tag_raise("nut_label")
 
-                # Only plot the filtered detections
-                if filtered_detections:
-                    result_image_np = results[0].plot(filtered_detections)
-                else:
-                    result_image_np = frame  # Display original frame if no valid detections
+    def on_nut_mouse_drag(self, event):
+        if self.drawing_nut_area and self.nut_bbox:
+            self.camera_canvas.coords(self.nut_bbox, self.start_x, self.start_y, event.x, event.y)
+            self.camera_canvas.coords(self.nut_label, self.start_x, self.start_y - 10)
+            self.camera_canvas.tag_raise("nut")
+            self.camera_canvas.tag_raise("nut_label")
 
-                # Convert the result image to PIL Image format for display
-                result_image = Image.fromarray(result_image_np)
+    def on_nut_button_release(self, event):
+        if self.drawing_nut_area:
+            self.drawing_nut_area = False
+            self.camera_canvas.unbind("<ButtonPress-1>")
+            self.camera_canvas.unbind("<B1-Motion>")
+            self.camera_canvas.unbind("<ButtonRelease-1>")
+            # Save the coordinates to a JSON file
+            self.save_nut_area()
 
-                # Set the desired pixel dimensions
-                desired_width = 2590 // 4
-                desired_height = 1942 // 4
-                
-                # Resize the image to the desired dimensions
-                result_image = result_image.resize((desired_width, desired_height), Image.LANCZOS)
+    def save_nut_area(self):
+        if self.nut_bbox:
+            coords = self.camera_canvas.coords(self.nut_bbox)
+            nut_area = {
+                'start_x': coords[0],
+                'start_y': coords[1],
+                'end_x': coords[2],
+                'end_y': coords[3]
+            }
+            with open('nut_area.json', 'w') as f:
+                json.dump(nut_area, f, indent=4)
 
-                imgtk = ImageTk.PhotoImage(image=result_image)
-                self.camera_canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
-                self.camera_canvas.imgtk = imgtk
-
-                # Ensure the picking area boxes are on top of the image
+    def load_nut_area(self):
+        if os.path.exists('nut_area.json'):
+            with open('nut_area.json', 'r') as f:
+                nut_area = json.load(f)
+                self.nut_bbox = self.camera_canvas.create_rectangle(
+                    nut_area['start_x'], nut_area['start_y'],
+                    nut_area['end_x'], nut_area['end_y'],
+                    outline='red', tags="nut"
+                )
+                self.nut_label = self.camera_canvas.create_text(
+                    nut_area['start_x'], nut_area['start_y'] - 10,
+                    text="Nut Area", fill="red", tags="nut_label"
+                )
+                self.camera_canvas.tag_raise("nut")
+                self.camera_canvas.tag_raise("nut_label")
                 self.raise_bounding_boxes()
 
-            grab_result.Release()
-            self.camera_canvas.after(10, self.grab_and_display_with_detection)
+    def raise_bounding_boxes(self):
+        # Ensure all bounding boxes and labels are on top
+        if self.bearing_bbox:
+            self.camera_canvas.tag_raise(self.bearing_bbox)
+        if self.bearing_label:
+            self.camera_canvas.tag_raise(self.bearing_label)
+        if self.nut_bbox:
+            self.camera_canvas.tag_raise(self.nut_bbox)
+        if self.nut_label:
+            self.camera_canvas.tag_raise(self.nut_label)
 
-    def is_within_area(self, box, area_label):
-        # box is the bounding box of the detected object [x1, y1, x2, y2]
-        x1, y1, x2, y2 = box
+    def load_picking_box_size(self):
+        try:
+            with open('picking_settings.json', 'r') as f:
+                settings = json.load(f)
+                return settings.get('box_size', 60)  # Default to 60 if not found
+        except Exception as e:
+            print(f"Error loading picking settings: {e}")
+            return 60  # Default value if loading fails
 
-        if area_label == "Area One":
-            if None in (self.start_x_one, self.start_y_one, self.end_x_one, self.end_y_one):
-                return False
-            # Ensure the entire object is within the Area One bounding box
-            return (self.start_x_one <= x1 <= self.end_x_one and
-                    self.start_y_one <= y1 <= self.end_y_one and
-                    self.start_x_one <= x2 <= self.end_x_one and
-                    self.start_y_one <= y2 <= self.end_y_one)
-
-        elif area_label == "Area Two":
-            if None in (self.start_x_two, self.start_y_two, self.end_x_two, self.end_y_two):
-                return False
-            # Ensure the entire object is within the Area Two bounding box
-            return (self.start_x_two <= x1 <= self.end_x_two and
-                    self.start_y_two <= y1 <= self.end_y_two and
-                    self.start_x_two <= x2 <= self.end_x_two and
-                    self.start_y_two <= y2 <= self.end_y_two)
-
-        return False
-
-
-
+    def load_matching_value(self):
+        try:
+            with open('picking_settings.json', 'r') as f:
+                settings = json.load(f)
+                return float(settings.get('matching', 0))  # Default to 0 if not found
+        except Exception as e:
+            print(f"Error loading matching value: {e}")
+            return 0  # Default value if loading fails
+        
+    def load_bearing_area_from_json(self):
+        if os.path.exists('bearing_area.json'):
+            with open('bearing_area.json', 'r') as f:
+                return json.load(f)
+        else:
+            return {'start_x': 0, 'start_y': 0, 'end_x': 800, 'end_y': 600}  # Default values
