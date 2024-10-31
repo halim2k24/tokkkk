@@ -1,7 +1,7 @@
 {
-    "matching": "80",
+    "matching": "99",
     "detection_order": "Ascending Y",
     "detection_count": "0",
-    "picking_angle": "90-270",
+    "picking_angle": "",
     "box_size": 39
 }

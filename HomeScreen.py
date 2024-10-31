@@ -30,7 +30,7 @@ class HomeScreen:
         )
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(current_dir, "model/best3.pt")
+        model_path = os.path.join(current_dir, "model/best10.pt")
         self.model = YOLO(model_path)
 
         self.main_frame = tk.Frame(self.root, bg="white")
@@ -191,9 +191,29 @@ class HomeScreen:
 
 
 
-    def draw_picking_box(self, frame, center_x, center_y, object_width, picking_box_size):
-        picking_angle = self.load_picking_settings()
+    def draw_rotated_box(self, frame, center, size, angle):
+        """Draw a rotated rectangle on the frame and show its center point."""
+        rect = ((center[0], center[1]), (size, size), angle)
+        box = cv2.boxPoints(rect)
+        box = np.int0(box)
+        cv2.drawContours(frame, [box], 0, (0, 255, 255), 2)  # Yellow color
 
+        # Draw the center point
+        cv2.circle(frame, (int(center[0]), int(center[1])), 3, (0, 0, 255), -1)  # Red color for center point
+
+        # Display the center point coordinates
+        cv2.putText(frame, f"({int(center[0])}, {int(center[1])})", (int(center[0]) + 5, int(center[1]) - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+
+    def calculate_positions(self, center_x, center_y, picking_box_size, angle, distance):
+        rad = np.radians(angle)
+        offset_x = int(distance * np.cos(rad))
+        offset_y = int(distance * np.sin(rad))
+        start_x = int(center_x + offset_x - picking_box_size / 2)
+        start_y = int(center_y + offset_y - picking_box_size / 2)
+        return start_x, start_y
+
+    def draw_picking_box(self, frame, center_x, center_y, object_width, picking_box_size, ok_objects, inside_bearing_objects):
         # Load the bearing area coordinates from the JSON file
         bearing_area = self.load_bearing_area_from_json()
 
@@ -207,65 +227,91 @@ class HomeScreen:
             # Check if the box stays within the bearing area
             return area_x_min <= x <= area_x_max - size and area_y_min <= y <= area_y_max - size
 
-        # First, try drawing boxes at 0-180 degrees
-        success = False
-        angles_0_180 = [0, 180]
-        for angle in angles_0_180:
-            if angle == 0:
-                start_x = int(center_x + object_width / 2)
-                start_y = int(center_y - picking_box_size / 2)
-            elif angle == 180:
-                start_x = int(center_x - object_width / 2 - picking_box_size)
-                start_y = int(center_y - picking_box_size / 2)
+        def is_overlapping(box, circle_center, circle_radius):
+            """Check if a box overlaps with a circle."""
+            box_x_min, box_y_min, box_x_max, box_y_max = box
+            circle_x, circle_y = circle_center
 
-            if is_within_bearing_area(start_x, start_y, picking_box_size):
-                # Draw the picking box at this angle since it's within the bearing area
-                cv2.rectangle(frame, (start_x, start_y),
-                            (start_x + picking_box_size, start_y + picking_box_size),
-                            (0, 255, 255), 2)  # Yellow color
+            # Check if the circle's center is within the box
+            if box_x_min <= circle_x <= box_x_max and box_y_min <= circle_y <= box_y_max:
+                return True
 
-                # Calculate and draw the center point of the picking box
-                box_center_x = start_x + picking_box_size // 2
-                box_center_y = start_y + picking_box_size // 2
-                cv2.circle(frame, (box_center_x, box_center_y), 3, (0, 255, 255), -1)  # Center point
-                cv2.putText(frame, f"({box_center_x}, {box_center_y})",
-                            (box_center_x + 5, box_center_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-                cv2.putText(frame, f"Pick {angle}", (start_x, start_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-                success = True  # Mark success
+            # Check if the distance from the circle's center to any of the box's corners is less than the circle's radius
+            corners = [(box_x_min, box_y_min), (box_x_max, box_y_min), (box_x_min, box_y_max), (box_x_max, box_y_max)]
+            for corner_x, corner_y in corners:
+                if ((corner_x - circle_x) ** 2 + (corner_y - circle_y) ** 2) ** 0.5 < circle_radius:
+                    return True
+
+            return False
+
+        # Iterate over each "ok" object and draw the picking boxes
+        for obj in ok_objects:
+            x1, y1, x2, y2, confidence = obj
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            object_width = x2 - x1
+
+            # Draw a circle for the "ok" object
+            radius = max(object_width, y2 - y1) / 2
+            cv2.circle(frame, (int(center_x), int(center_y)), int(radius), (0, 255, 0), 2)  # Green color for "ok" objects
+
+            # Set a fixed distance for both picking boxes
+            distance = object_width
+
+            # Try different angles to find non-overlapping positions for both boxes
+            for angle in range(0, 360, 10):
+                start_x_0, start_y_0 = self.calculate_positions(center_x, center_y, picking_box_size, angle, distance)
+                start_x_180, start_y_180 = self.calculate_positions(center_x, center_y, picking_box_size, angle + 180, distance)
+
+                box_0 = (start_x_0, start_y_0, start_x_0 + picking_box_size, start_y_0 + picking_box_size)
+                box_180 = (start_x_180, start_y_180, start_x_180 + picking_box_size, start_y_180 + picking_box_size)
+
+                # Check for overlap with any inside_bearing_objects, excluding the current object
+                overlap_found = False
+                for inside_obj in inside_bearing_objects:
+                    ix1, iy1, ix2, iy2, _, _ = inside_obj
+                    if (ix1, iy1, ix2, iy2) == (x1, y1, x2, y2):
+                        continue  # Skip the current object itself
+
+                    circle_center = ((ix1 + ix2) / 2, (iy1 + iy2) / 2)
+                    circle_radius = max(ix2 - ix1, iy2 - iy1) / 2
+
+                    if is_overlapping(box_0, circle_center, circle_radius) or is_overlapping(box_180, circle_center, circle_radius):
+                        overlap_found = True
+                        break
+
+                if not overlap_found and is_within_bearing_area(start_x_0, start_y_0, picking_box_size) and is_within_bearing_area(start_x_180, start_y_180, picking_box_size):
+                    self.draw_rotated_box(frame, (start_x_0 + picking_box_size // 2, start_y_0 + picking_box_size // 2), picking_box_size, angle)
+                    self.draw_rotated_box(frame, (start_x_180 + picking_box_size // 2, start_y_180 + picking_box_size // 2), picking_box_size, angle + 180)
+                    break
             else:
-                print(f"Box at angle {angle} goes outside the bearing area, adjusting...")
+                # Try alternative angles if no position is found
+                for angle in range(90, 450, 10):
+                    start_x_90, start_y_90 = self.calculate_positions(center_x, center_y, picking_box_size, angle, distance)
+                    start_x_270, start_y_270 = self.calculate_positions(center_x, center_y, picking_box_size, angle + 180, distance)
 
-        # If no box was drawn for 0-180 degrees, try drawing at 90-270 degrees
-        if not success:
-            angles_90_270 = [90, 270]
-            for angle in angles_90_270:
-                if angle == 90:
-                    start_x = int(center_x - picking_box_size / 2)
-                    start_y = int(center_y - object_width / 2 - picking_box_size)
-                elif angle == 270:
-                    start_x = int(center_x - picking_box_size / 2)
-                    start_y = int(center_y + object_width / 2)
+                    box_90 = (start_x_90, start_y_90, start_x_90 + picking_box_size, start_y_90 + picking_box_size)
+                    box_270 = (start_x_270, start_y_270, start_x_270 + picking_box_size, start_y_270 + picking_box_size)
 
-                if is_within_bearing_area(start_x, start_y, picking_box_size):
-                    # Draw the picking box at this angle since it's within the bearing area
-                    cv2.rectangle(frame, (start_x, start_y),
-                                (start_x + picking_box_size, start_y + picking_box_size),
-                                (0, 255, 255), 2)  # Yellow color
+                    overlap_found = False
+                    for inside_obj in inside_bearing_objects:
+                        ix1, iy1, ix2, iy2, _, _ = inside_obj
+                        if (ix1, iy1, ix2, iy2) == (x1, y1, x2, y2):
+                            continue
 
-                    # Calculate and draw the center point of the picking box
-                    box_center_x = start_x + picking_box_size // 2
-                    box_center_y = start_y + picking_box_size // 2
-                    cv2.circle(frame, (box_center_x, box_center_y), 3, (0, 255, 255), -1)  # Center point
-                    cv2.putText(frame, f"({box_center_x}, {box_center_y})",
-                                (box_center_x + 5, box_center_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-                    cv2.putText(frame, f"Pick {angle}", (start_x, start_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-                    success = True  # Mark success
+                        circle_center = ((ix1 + ix2) / 2, (iy1 + iy2) / 2)
+                        circle_radius = max(ix2 - ix1, iy2 - iy1) / 2
+
+                        if is_overlapping(box_90, circle_center, circle_radius) or is_overlapping(box_270, circle_center, circle_radius):
+                            overlap_found = True
+                            break
+
+                    if not overlap_found and is_within_bearing_area(start_x_90, start_y_90, picking_box_size) and is_within_bearing_area(start_x_270, start_y_270, picking_box_size):
+                        self.draw_rotated_box(frame, (start_x_90 + picking_box_size // 2, start_y_90 + picking_box_size // 2), picking_box_size, angle)
+                        self.draw_rotated_box(frame, (start_x_270 + picking_box_size // 2, start_y_270 + picking_box_size // 2), picking_box_size, angle + 180)
+                        break
                 else:
-                    print(f"Box at angle {angle} goes outside the bearing area, unable to draw...")
-
-        if not success:
-            print("Unable to draw any picking box within the bearing area.")
-            
+                    print("Unable to find non-overlapping positions for the picking boxes.")
 
     def grab_and_display(self):
         if self.camera.IsGrabbing():
@@ -296,49 +342,80 @@ class HomeScreen:
                     bearing_coords = self.camera_canvas.coords(self.bearing_bbox) if self.bearing_bbox else None
                     nut_coords = self.camera_canvas.coords(self.nut_bbox) if self.nut_bbox else None
 
+                    detected_objects = []  # Initialize detected_objects list
+                    ok_objects = []  # List to store "ok" objects
+                    inside_bearing_objects = []  # List to store all objects inside the bearing area
+                    print(inside_bearing_objects)
+                    print("--------------------------------")   
                     for result in results:
                         for box in result.boxes:
-                            x1, y1, x2, y2 = box.xyxy[0]  # Get the bounding box coordinates
-                            center_x = (x1 + x2) / 2
-                            center_y = (y1 + y2) / 2
-                            object_width = x2 - x1  # Width of the object
+                            # Ensure the coordinates are correctly accessed and unpacked
+                            coordinates = box.xyxy[0].cpu().numpy()  # Convert to numpy array
+                            if len(coordinates) == 4:
+                                x1, y1, x2, y2 = map(int, coordinates)  # Safely unpack the values
+                                center_x = (x1 + x2) / 2
+                                center_y = (y1 + y2) / 2
+                                object_width = x2 - x1  # Width of the object
 
-                            confidence = box.conf.item()  # Confidence score
-                            print(f"Confidence: {confidence}")  
+                                confidence = box.conf.item()  # Confidence score
+                                label = result.names[box.cls.item()]  # Class label (assume OK or NG)
 
-                            label = result.names[box.cls.item()]  # Class label (assume OK or NG)
+                                # Print the label and confidence level
+                                print(f"Label: {label}, Confidence: {confidence:.2f}")
 
-                            # Check if the object is within the bearing area
-                            inside_bearing = (bearing_coords and bearing_coords[0] <= center_x <= bearing_coords[2] and
-                                            bearing_coords[1] <= center_y <= bearing_coords[3])
-                            matching_value = self.load_matching_value()
+                                # Add the detected object to the list
+                                detected_objects.append((x1, y1, x2, y2, confidence, label))
 
+                                # Check if the object is within the bearing area
+                                inside_bearing = (bearing_coords and bearing_coords[0] <= center_x <= bearing_coords[2] and
+                                                bearing_coords[1] <= center_y <= bearing_coords[3])
+                                matching_value = self.load_matching_value()
 
-                            if inside_bearing:
-                                if confidence < matching_value/100:
-                                    label = "ng"
+                                if inside_bearing:
+                                    # Add to the list of objects inside the bearing area
+                                    inside_bearing_objects.append((x1, y1, x2, y2, confidence, label))
+                                    if confidence < matching_value / 100:
+                                        label = "NG"
 
-                                if label == "ok":
-                                    # OK object: Draw green bounding box and center point
-                                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 0), 1)
-                                    cv2.putText(frame, f"{label}: {confidence:.2f}",
-                                                (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-                                    # Draw center point for OK objects
-                                    cv2.circle(frame, (int(center_x), int(center_y)), 5, (255, 255, 0), -1)
-                                    cv2.putText(frame, f"({int(center_x)}, {int(center_y)})", (int(center_x), int(center_y)),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                                    if label == "OK":
+                                        # OK object: Draw green bounding box and center point
+                                        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 0), 1)
+                                        cv2.putText(frame, f"OK: {confidence:.2f}",
+                                                    (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                                        # Draw center point for OK objects
+                                        cv2.circle(frame, (int(center_x), int(center_y)), 5, (255, 255, 0), -1)
+                                        cv2.putText(frame, f"({int(center_x)}, {int(center_y)})", (int(center_x), int(center_y)),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
-                                    # Draw the picking box on the OK object
-                                    self.draw_picking_box(frame, center_x, center_y, object_width, picking_box_size=self.picking_box_size)
+                                        # Add to the list of ok objects
+                                        ok_objects.append((x1, y1, x2, y2, confidence))
 
-                                elif label == "ng":
-                                    # NG object: Draw red bounding box, but no center point or coordinates
-                                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 1)
-                                    cv2.putText(frame, f"{label} (NG)",
-                                                (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                                    elif label == "NG":
+                                        # NG object: Draw red bounding box, center point, and circle
+                                        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 1)
+                                        cv2.putText(frame, f"NG: {confidence:.2f}",
+                                                    (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                                        # Draw center point for NG objects
+                                        # cv2.circle(frame, (int(center_x), int(center_y)), 5, (0, 0, 255), -1)
+                                        # cv2.putText(frame, f"({int(center_x)}, {int(center_y)})", (int(center_x), int(center_y)),
+                                        #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                                        # Draw circle for NG objects
+                                        radius = max(object_width, y2 - y1) / 2
+                                        self.draw_circle(frame, center_x, center_y, radius)
+                                else:
+                                    # Outside the bearing area: Draw gray bounding box, no labels or confidence
+                                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (128, 128, 128), 1)
                             else:
-                                # Outside the bearing area: Draw gray bounding box, no labels or confidence
-                                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (128, 128, 128), 1)
+                                print(f"Unexpected number of values in coordinates: {coordinates}")
+
+                    # Draw the picking box only for OK objects
+                    for obj in ok_objects:
+                        x1, y1, x2, y2, confidence = obj
+                        center_x = (x1 + x2) / 2
+                        center_y = (y1 + y2) / 2
+                        object_width = x2 - x1
+
+                        self.draw_picking_box(frame, center_x, center_y, object_width, self.picking_box_size, ok_objects, inside_bearing_objects)
 
                     # Convert the result image to a format suitable for Tkinter
                     result_image = Image.fromarray(frame)
@@ -357,11 +434,9 @@ class HomeScreen:
             print("Camera is not grabbing.")
         self.root.after(10, self.grab_and_display)
 
-
-
-
-
-
+    def draw_circle(self, frame, center_x, center_y, radius):
+        """Draw a circle from the center point that covers the full object radius."""
+        cv2.circle(frame, (int(center_x), int(center_y)), int(radius), (0, 0, 255), 2)  # Red color
 
     def update_camera_frame(self):
         if self.camera.IsGrabbing():
