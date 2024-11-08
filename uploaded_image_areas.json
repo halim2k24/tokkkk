@@ -1,0 +1,14 @@
+{
+    "bearing_area": {
+        "start_x": 731.0,
+        "start_y": 54.0,
+        "end_x": 1234.0,
+        "end_y": 655.0
+    },
+    "nut_area": {
+        "start_x": 5.0,
+        "start_y": 73.0,
+        "end_x": 349.0,
+        "end_y": 525.0
+    }
+}
