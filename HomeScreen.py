@@ -13,6 +13,7 @@ from picking_area import set_picking_area, load_picking_area
 from top_menu import create_top_menu
 from PickingCondations import PickingConditions
 import sys
+from sklearn.decomposition import PCA
 
 
 class HomeScreen:
@@ -37,6 +38,7 @@ class HomeScreen:
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         model_path = os.path.join(current_dir, "model/best2024-11-1.pt")
+        # model_path = os.path.join(current_dir, "model/nut101.pt")
         self.model = YOLO(model_path)
 
         self.main_frame = tk.Frame(self.root, bg="white")
@@ -943,6 +945,7 @@ class HomeScreen:
             # Load and display the image
             self.display_uploaded_image(file_path)
 
+
     def display_uploaded_image(self, file_path):
         """Display the uploaded image in the canvas at a standard size and show areas."""
         # Define standard sizes locally
@@ -958,82 +961,66 @@ class HomeScreen:
         # Convert the image to a format suitable for display
         frame = np.array(image)  # Convert PIL image to NumPy array
 
-        # Apply YOLO object detection
-        results = self.model.predict(source=frame, task="detect", show=False)
+        
+        nut_model_path = r"c:\\Users\\ykoma\Desktop\\ハリム\\tok-piccking-long-hight-camera\\model\\nut101.pt"
+        nut_model = YOLO(nut_model_path)
 
-        # Draw bounding boxes and circles for detected objects
+        # Apply YOLO object detection using the model
+        results = nut_model.predict(source=frame, task="segment", conf=0.5, show=False)
+
+        # Draw rotated bounding boxes and orientation lines for detected objects
         for result in results:
             for box in result.boxes:
                 coordinates = box.xyxy[0].cpu().numpy()  # Get the bounding box coordinates
                 if len(coordinates) == 4:
-                    x1, y1, x2, y2 = map(int, coordinates)  # Convert to integers
+                    # Get the four corners of the bounding box
+                    points = np.array([[coordinates[0], coordinates[1]],
+                                    [coordinates[2], coordinates[1]],
+                                    [coordinates[2], coordinates[3]],
+                                    [coordinates[0], coordinates[3]]], dtype=np.float32)
+
+                    # Calculate the minimum area rectangle for the rotated bounding box
+                    rect = cv2.minAreaRect(points)
+                    box_points = cv2.boxPoints(rect)  # Get the four corners of the rotated rectangle
+                    box_points = np.int0(box_points)  # Convert to integer
+
+                    # Draw the rotated bounding box based on object orientation
+                    cv2.polylines(frame, [box_points], isClosed=True, color=(0, 255, 0), thickness=2)  # Green for rotated bounding box
+
+                    # Calculate the center of the rotated rectangle
+                    center_x, center_y = np.int0(rect[0])  # Center point of the rectangle
+                    cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)  # Red circle for center point
+                    cv2.putText(frame, f"Center: ({center_x}, {center_y})", (center_x + 10, center_y), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)  # Display center coordinates
+
+                    # Draw the main orientation line across the center
+                    angle = rect[2]
+                    if angle < -45:
+                        angle += 90
+
+                    length = 50  # Length of the lines to be drawn from the center
+                    x_offset_main = int(length * np.cos(np.radians(angle)))
+                    y_offset_main = int(length * np.sin(np.radians(angle)))
+
+                    # Draw the line along the main orientation
+                    cv2.line(frame, (center_x - x_offset_main, center_y - y_offset_main), 
+                            (center_x + x_offset_main, center_y + y_offset_main), 
+                            (255, 0, 0), 2)  # Red line for main orientation
+
+                    # Draw the perpendicular line
+                    angle_perpendicular = angle + 90  # Perpendicular angle
+                    x_offset_perp = int(length * np.cos(np.radians(angle_perpendicular)))
+                    y_offset_perp = int(length * np.sin(np.radians(angle_perpendicular)))
+
+                    # Draw the perpendicular line across the center
+                    cv2.line(frame, (center_x - x_offset_perp, center_y - y_offset_perp), 
+                            (center_x + x_offset_perp, center_y + y_offset_perp), 
+                            (255, 0, 0), 2)  # Red line for perpendicular orientation
+
+                    # Get confidence score
                     confidence = box.conf[0].cpu().numpy()  # Get the confidence score
-
-                    # Calculate width and height of the bounding box
-                    width = x2 - x1
-                    height = y2 - y1
-
-                    # Check if the object is approximately circular
-                    aspect_ratio = width / height if height != 0 else 0
-                    if 0.8 <= aspect_ratio <= 1.2:  # Adjust the range as needed for circularity
-                        # Draw the bounding box on the frame
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Blue for detected objects
-                        cv2.putText(frame, f"Confidence: {confidence:.2f}", (x1, y1 - 10), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-
-                        # Calculate and draw the center point
-                        center_x = (x1 + x2) // 2
-                        center_y = (y1 + y2) // 2
-                        cv2.circle(frame, (center_x, center_y), 5, (0, 255, 0), -1)  # Green circle for center point
-                        cv2.putText(frame, f"Center: ({center_x}, {center_y})", (center_x + 10, center_y), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  # Display center coordinates
-
-                        # Draw a circle around the detected object
-                        radius = max(width, height) // 2  # Use half the max dimension as the radius
-                        cv2.circle(frame, (center_x, center_y), radius, (0, 255, 255), 2)  # Yellow circle around the object
-
-                        # Draw 40x40 picking boxes outside the object circle
-                        box_size = 40
-                        offset = box_size / 2  # Set offset to half of the picking box size
-                        distance_from_center = radius + offset  # Total distance from center to box
-
-                        # Position for 0 degrees (right of the center)
-                        box_x_0 = int(center_x + distance_from_center)  # Right of the center
-                        box_y_0 = int(center_y)  # Same vertical position
-
-                        # Ensure the coordinates are integers
-                        top_left = (box_x_0 - box_size // 2, box_y_0 - box_size // 2)
-                        bottom_right = (box_x_0 + box_size // 2, box_y_0 + box_size // 2)
-
-                        # Draw the rectangle
-                        cv2.rectangle(frame, top_left, bottom_right, (0, 0, 255), 2)  # Red outline
-
-                        # Calculate and display the center of the picking box
-                        picking_box_center_x = (top_left[0] + bottom_right[0]) // 2
-                        picking_box_center_y = (top_left[1] + bottom_right[1]) // 2
-                        cv2.circle(frame, (picking_box_center_x, picking_box_center_y), 5, (255, 0, 255), -1)  # Magenta circle for picking box center
-                        cv2.putText(frame, f"Picking Box Center: ({picking_box_center_x}, {picking_box_center_y})", 
-                                    (picking_box_center_x + 10, picking_box_center_y), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)  # Display picking box center coordinates
-
-                        # Position for 180 degrees (left of the center)
-                        box_x_180 = int(center_x - distance_from_center)  # Left of the center
-                        box_y_180 = int(center_y)  # Same vertical position
-
-                        # Ensure the coordinates are integers
-                        top_left_180 = (box_x_180 - box_size // 2, box_y_180 - box_size // 2)
-                        bottom_right_180 = (box_x_180 + box_size // 2, box_y_180 + box_size // 2)
-
-                        # Draw the rectangle
-                        cv2.rectangle(frame, top_left_180, bottom_right_180, (0, 0, 255), 2)  # Red outline
-
-                        # Calculate and display the center of the picking box
-                        picking_box_center_x_180 = (top_left_180[0] + bottom_right_180[0]) // 2
-                        picking_box_center_y_180 = (top_left_180[1] + bottom_right_180[1]) // 2
-                        cv2.circle(frame, (picking_box_center_x_180, picking_box_center_y_180), 5, (255, 0, 255), -1)  # Magenta circle for picking box center
-                        cv2.putText(frame, f"Picking Box Center: ({picking_box_center_x_180}, {picking_box_center_y_180})", 
-                                    (picking_box_center_x_180 + 10, picking_box_center_y_180), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)  # Display picking box center coordinates
+                    cv2.putText(frame, f"Confidence: {confidence:.2f}", (int(coordinates[0]), int(coordinates[1]) - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         # Convert the processed frame back to an image for display
         result_image = Image.fromarray(frame)
